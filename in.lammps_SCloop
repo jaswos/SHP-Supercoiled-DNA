@@ -1,0 +1,180 @@
+###############################################
+# LAMMPS script for a supercoiled loop
+###############################################
+
+# each partition takes a different torque
+variable torque universe 10 5 4 3 2 1 
+#variable torque equal 10
+
+# now do a loop with 10 different simulations
+# each with a different seed
+
+variable runnumber index 3 4 5 6 7 8 9 10
+
+if "${runnumber} == 1" then &
+      "variable seed equal 748291" &
+   elif "${runnumber} == 2"  &
+      "variable seed equal 583210" &
+   elif "${runnumber} == 3"  &
+      "variable seed equal 972431" &
+   elif "${runnumber} == 4"  &
+       "variable seed equal 304825" &
+   elif "${runnumber} == 5"  &
+       "variable seed equal 615203" &
+   elif "${runnumber} == 6"  &
+       "variable seed equal 489132" &
+   elif "${runnumber} == 7"  &
+       "variable seed equal 790214" &
+   elif "${runnumber} == 8"  &
+       "variable seed equal 356827" &
+   elif "${runnumber} == 9"  &
+       "variable seed equal 928374" &
+   elif "${runnumber} == 10"  &
+       "variable seed equal 205074" &
+   else &
+       "variable seed equal 1357924" &
+
+###
+# Box and units  (use LJ units and periodic boundaries)
+###
+
+units lj                 # use lennard-jones (i.e. dimensionless) units
+atom_style hybrid angle ellipsoid   # atoms with bonds, angles and orientations
+
+boundary p p p           # all boundaries are periodic
+
+###
+# Pair interactions require lists of neighbours to be calculated
+###
+neighbor 1.9 bin
+neigh_modify every 1 delay 1 check yes 
+
+
+### 
+# READ "start" data file 
+###
+read_data ic_l300_lk10.txt 
+
+### 
+# Reset timestep 
+###
+reset_timestep 0 
+
+###
+# Define groups 
+###
+group all type 1
+
+###
+# Dump configurations
+###
+compute quat all property/atom quatw quati quatj quatk
+dump d2 all custom 10000 dumpfiles/dump_l300_lk10_t${torque}_run${runnumber}.DNA id type xs ys zs ix iy iz c_quat[1] c_quat[2] c_quat[3] c_quat[4]
+# compute the quaternion which describes the orientation of each bead
+# output along with coordinates
+
+
+###
+# Set up interactions
+###
+
+
+###################################################################
+# Stiffness term
+#
+# E = K * (1+cos(theta)), K>0
+#
+angle_style   hybrid cosine polytorsion
+angle_coeff   1 cosine 20.0
+angle_coeff   2 polytorsion 70.0 30.0
+angle_coeff   3 polytorsion 70.0 30.0
+
+###################################################################
+
+###################################################################
+# Pair interaction between non-bonded atoms
+
+pair_style      lj/cut 1.12246152962189
+pair_modify     shift yes
+pair_coeff      1 1 1.0 1.0 1.12246152962189
+
+###################################################################
+
+###################################################################
+# Pair interaction between bonded atoms
+
+bond_style   fene
+special_bonds fene #<=== I M P O R T A N T (new command)
+bond_coeff   1   30.0   1.6   1.0   1.0
+
+
+###################################################
+###
+# Set up fixes
+###
+
+fix 1 all   nve/asphere   ###NVE ensemble
+fix 2 all   langevin   1.0 1.0 0.5  ${seed} angmom 3.333 ###Langevin integrator Tstart Tstop 1/friction rndseed
+# the nve/asphere interates rotational motion as well as displacements
+# also need to add a command to the langevin fix to do the rotation
+
+##### Output thermodynamic info  (temperature, energy, pressure, etc.) #####
+thermo 5000
+thermo_style   custom   step  temp  epair  emol  press  vol
+############################################################################
+
+
+
+###
+# set timestep of integrator
+###
+timestep 0.01 
+
+## do run
+run 8000000
+
+
+## add torque at beads 75 and 76
+variable beadTA equal 75
+variable beadTB equal ${beadTA}+1
+group grpTA id ${beadTA}
+group grpTB id ${beadTB}
+
+# set the magnitude of the torque
+variable torqmag equal ${torque}
+
+# Get the torque about the vector going from bead A to B
+# It should approximatly be a unit vector, since the bonds have length 1
+# This should give a right-hand rotation about this vector
+variable torqA2Bx equal ${torqmag}*(x[${beadTB}]-x[${beadTA}])
+variable torqA2By equal ${torqmag}*(y[${beadTB}]-y[${beadTA}])
+variable torqA2Bz equal ${torqmag}*(z[${beadTB}]-z[${beadTA}])
+
+# Get the torque about the vector going from bead B to A
+# This will be a rotation in the opposite derection to above
+variable torqB2Ax equal ${torqmag}*(x[${beadTA}]-x[${beadTB}])
+variable torqB2Ay equal ${torqmag}*(y[${beadTA}]-y[${beadTB}])
+variable torqB2Az equal ${torqmag}*(z[${beadTA}]-z[${beadTB}])
+
+# Now add the torque fixes
+fix tw1 grpTA cbaddtorque v_torqA2Bx v_torqA2By v_torqA2Bz
+fix tw2 grpTB cbaddtorque v_torqB2Ax v_torqB2Ay v_torqB2Az
+
+#bond breaking
+
+angle_coeff   1 cosine 20.0
+angle_coeff   2 polytorsion 70.0 30.0
+angle_coeff   3 polytorsion 70.0 0.0
+
+
+## do run
+run 10000000
+
+
+#### write a final restart file
+write_data restarts/final_l300_lk10_t${torque}_run${runnumber}.restart nocoeff 
+
+## finish the loop
+clear
+next runnumber
+jump in_l300_lk10.lammps_SCloop

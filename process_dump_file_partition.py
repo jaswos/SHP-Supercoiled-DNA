@@ -15,7 +15,8 @@ import operator
 import os
 
 from supercoiling.twist import calculate_Twist_loop
-from supercoiling.writhe_cython import calculate_Writhe
+from supercoiling.twist import calculate_Twist_section
+#from supercoiling.writhe_cython import calculate_Writhe
 
 
 class Atom:
@@ -74,10 +75,10 @@ class Atom:
 
 
 
-def readframe_unwrap(infile,N):
+def readframe_unwrap(infile, N):
     """ Read a single frame of atoms from a dump file 
-        Rescale coordinates to be in rnage -L/2 to L/2
-        Unwrap corrdinates for periodic box """
+        Rescale coordinates to be in range -L/2 to L/2
+        Unwrap coordinates for periodic box """
 
     atoms = []
     L = []
@@ -104,12 +105,15 @@ def readframe_unwrap(infile,N):
             newatom.x[j] = newatom.x[j] + newatom.image[j]*L[j] # unwrap
         for j in range(4):
             newatom.q[j] = np.float64(line[j+8])
-        atoms.append(newatom)
+            
+        atoms.append(newatom) 
+        # this array should end up identical to how the original data would
+        # have parsed the file
 
     # make sure atoms are sorted by id
     atoms.sort(key=operator.attrgetter('id'))
 
-    return atoms,L
+    return atoms, L
 
 
 def lines_in_file(filename):
@@ -142,6 +146,65 @@ def radius_of_gyration(atoms,L):
 
     return np.sqrt( Rg2 )
 
+def calculate_partition_twist(atoms, fvector, partition_indices, N_partitions):
+    
+    # each partition's total twist will be asigned here
+    partition_twists = np.zeros(partition_indices.shape[1])
+
+    # partition index array used to create arrays with the necessary
+    # atoms for each section, from which twist is calculated
+    for i in range(N_partitions):
+        atom_selection = []
+        fvector_selection = []
+        for j in range(partition_indices.shape[0]):
+            # somehow the array entries became floats along the journey
+            atom_selection.append(atoms[int(partition_indices[j, i])])
+            fvector_selection.append(fvector[int(partition_indices[j, i])])
+        partition_twists[i] = calculate_Twist_section(atom_selection, fvector_selection)
+
+    return partition_twists    
+
+def calculate_partition_indices(N, partition):
+    """
+
+    Parameters
+    ----------
+    N : total number of atoms 
+    partition : the number of atoms in each partition
+
+    Returns
+    -------
+    array with a number of columns equal to the number of partitions
+    where the contents of each column contain all the atom indices 
+    needed to calculate the angles for that section
+
+    """
+    
+    N_partitions = int(N/partition)
+    
+    # create an array which contains all the indices needed
+    # for each partition
+    
+    indices_needed = np.zeros((partition + 2, N_partitions))
+    for i in range(0, N_partitions):
+        indices_needed[0, i] = (i * partition) - 1
+        
+        # this "reverse modulo" acocunts for the fact that index -1 is really
+        # referring to the atom at the end of the chain
+        if indices_needed[0, i] == -1:
+            indices_needed[0, i] = N-1
+            
+        for j in range(partition):
+            indices_needed[j+1, i] = ((i * partition) + j)
+        indices_needed[-1, i] = ((i * partition) + partition)
+        
+        # again, index 300 really refers to index 0; in this
+        # sense we're working in a regular mod 300 system
+        if indices_needed[-1, i] == N:
+            indices_needed[-1, i] = 0
+    
+    return indices_needed
+    
 
 ############################################################################
 ############################################################################
@@ -153,62 +216,74 @@ def radius_of_gyration(atoms,L):
 ## (does this in a dumb way with little error checking)
 #### assume order is dumpfile Natoms outfileStart
 
-if not len(sys.argv) == 5:
-    print("Command usage: ./process_dump_file.py dumpfile Natoms dumpInterval outfile")
+if not len(sys.argv) == 6:
+    print("Command usage: ./process_dump_file_partition.py dumpfile Natoms dumpInterval outfile")
     print("           where   dumpfile       is a file name")
     print("                   Natoms         is an integer")
+    print("                   partition      is an integer")
     print("                   dumpInterval   is an integer, number of steps between dumps")
     print("                   outfile        is a file name which must not exist")
     exit()
 
 dumpfilename = sys.argv[1]
-Natoms = int(sys.argv[2])
-dumpInterval = int(sys.argv[3])
-outfile = sys.argv[4]
+N = int(sys.argv[2])
+partition = int(sys.argv[3])
+dumpInterval = int(sys.argv[4])
+outfile = sys.argv[5]
 
 if not os.path.isfile(dumpfilename):
     print("Cannot find file %s.  Exiting..."%dumpfilename)
     exit()
-    
-if os.path.isfile(outfile):
-    print("File %s already exists, will not overwrite. Exiting..."%outfile)
+
+if N % partition != 0:
+    print(f"Choose partition which is a factor of {N}")
     exit()
+    
+#if os.path.isfile(outfile):
+    #print("File %s already exists, will not overwrite. Exiting..."%outfile)
+    #exit()
     
 
 Nlines = lines_in_file(dumpfilename)  # get length of file
-Nframes = int( Nlines / (Natoms+9) )  # there are 9 header lines in each frame
-
+Nframes = int( Nlines / (N+9) )  # there are 9 header lines in each frame
+N_partitions = int(N/partition) # 
 
 # open the intput file
 inf = open(dumpfilename, 'r')  
 
 # open the output files and print a header
 ouf = open(outfile, 'w')  
-ouf.write("#, timestep, radius_of_gyration, Twist, Writhe, Lk\n")
+
+heading = "timestep, Total_Twist"
+for part in range(N_partitions):
+    heading += f", partition_{part+1}_Tw"
+heading += "\n"
+ouf.write(heading)
+
+
+
+partition_indices = calculate_partition_indices(N, partition)
 
 # go through the file frame by frame
 for frame in range(Nframes):
+    
     # read the frame, unwrapping periodic coordinates
-    atoms, L = readframe_unwrap(inf,Natoms)
+    atoms, L = readframe_unwrap(inf, N)
 
-    # calculate radius of gyration
-    Rg = radius_of_gyration(atoms,L)
-
-    # get the u,f,v vectors of each atom from the quaternions
-    uvector = []
     fvector = []
-    vvector = []
     for i in range(len(atoms)):
-        uvector.append( atoms[i].quat2uaxis() )
-        fvector.append( atoms[i].quat2faxis() )
-        vvector.append( atoms[i].quat2vaxis() )
-
-    # calculate twist and writhe
+        fvector.append(atoms[i].quat2faxis())
+    
+    # calculate twist in total and in all partitions
     Tw = calculate_Twist_loop(atoms, fvector)
-    Wr = calculate_Writhe(atoms)
+    partition_twist = calculate_partition_twist(atoms, fvector, partition_indices, N_partitions)
 
     # output
-    ouf.write( "%i %.5f %.5f %.5f %.5f\n"%(frame*dumpInterval,Rg,Tw,Wr,Tw+Wr) )
+    output = f"{frame*dumpInterval} {Tw}"
+    for part in range(N_partitions):
+        output += f" {partition_twist[part]}"
+    output += "\n"
+    ouf.write(output)
 
 
 # close the files
