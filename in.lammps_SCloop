@@ -2,38 +2,38 @@
 # LAMMPS script for a supercoiled loop
 ###############################################
 
-# each partition takes a different bending stiffness value
-variable bending_stiffness universe 10.0 15.0 20.0 25.0 30.0
-#variable bending_stiffness equal 10.0
+# each partition takes a different torque
+variable torque universe 10 5 4 3 2 1 
+#variable torque equal 10
 
 # now do a loop with 10 different simulations
 # each with a different seed
 
-variable runnumber index 1 2 3 4 5 6 7 8 9 10
+variable runnumber index 3 4 5 6 7 8 9 10
 
 if "${runnumber} == 1" then &
-      "variable seed equal 982374" &
+      "variable seed equal 748291" &
    elif "${runnumber} == 2"  &
-      "variable seed equal 467829" &
+      "variable seed equal 583210" &
    elif "${runnumber} == 3"  &
-      "variable seed equal 751093" &
+      "variable seed equal 972431" &
    elif "${runnumber} == 4"  &
-       "variable seed equal 234678" &
+       "variable seed equal 304825" &
    elif "${runnumber} == 5"  &
-       "variable seed equal 890345" &
+       "variable seed equal 615203" &
    elif "${runnumber} == 6"  &
-       "variable seed equal 126784" &
+       "variable seed equal 489132" &
    elif "${runnumber} == 7"  &
-       "variable seed equal 673452" &
+       "variable seed equal 790214" &
    elif "${runnumber} == 8"  &
-       "variable seed equal 509821" &
+       "variable seed equal 356827" &
    elif "${runnumber} == 9"  &
-       "variable seed equal 345678" &
+       "variable seed equal 928374" &
+   elif "${runnumber} == 10"  &
+       "variable seed equal 205074" &
    else &
-       "variable seed equal 987654" &
+       "variable seed equal 1357924" &
 
-# careful, this will give the same seed for all runnumber>=10
-        
 ###
 # Box and units  (use LJ units and periodic boundaries)
 ###
@@ -49,14 +49,11 @@ boundary p p p           # all boundaries are periodic
 neighbor 1.9 bin
 neigh_modify every 1 delay 1 check yes 
 
-## command to supress communication warning
-comm_modify cutoff 3.355
 
 ### 
 # READ "start" data file 
 ###
-read_data initial_conditions.txt
-
+read_data ic_l300_lk10.txt 
 
 ### 
 # Reset timestep 
@@ -69,10 +66,10 @@ reset_timestep 0
 group all type 1
 
 ###
-# Dump configurations every 10,000 steps
+# Dump configurations
 ###
 compute quat all property/atom quatw quati quatj quatk
-dump d2 all custom 10000 dumpfiles/dump_L300_bs${bending_stiffness}_run${runnumber}.DNA id type xs ys zs ix iy iz c_quat[1] c_quat[2] c_quat[3] c_quat[4]
+dump d2 all custom 10000 dumpfiles/dump_l300_lk10_t${torque}_run${runnumber}.DNA id type xs ys zs ix iy iz c_quat[1] c_quat[2] c_quat[3] c_quat[4]
 # compute the quaternion which describes the orientation of each bead
 # output along with coordinates
 
@@ -90,7 +87,7 @@ dump d2 all custom 10000 dumpfiles/dump_L300_bs${bending_stiffness}_run${runnumb
 angle_style   hybrid cosine polytorsion
 angle_coeff   1 cosine 20.0
 angle_coeff   2 polytorsion 70.0 30.0
-angle_coeff   3 cosine ${bending_stiffness}
+angle_coeff   3 polytorsion 70.0 30.0
 
 ###################################################################
 
@@ -122,33 +119,62 @@ fix 2 all   langevin   1.0 1.0 0.5  ${seed} angmom 3.333 ###Langevin integrator 
 # also need to add a command to the langevin fix to do the rotation
 
 ##### Output thermodynamic info  (temperature, energy, pressure, etc.) #####
-thermo 100000
-thermo_style   custom   step  temp  epair  emol
+thermo 5000
+thermo_style   custom   step  temp  epair  emol  press  vol
 ############################################################################
 
 
 
-## Initially, there may be some small overlaps
-## so do a short run with some extra checks and
-## and very small timestep
-
-neigh_modify every 1 delay 1 check no 
-timestep 0.001 
-run 1000
-
-## switch to normal settings for the rest of the run
-neigh_modify every 1 delay 1 check yes
+###
+# set timestep of integrator
+###
 timestep 0.01 
 
-## do run for 50 million steps
-run 20000000
+## do run
+run 8000000
 
 
-#### write a final restart data file
-write_data restarts/final_L300_bs${bending_stiffness}_run${runnumber}.restart nocoeff
+## add torque at beads 75 and 76
+variable beadTA equal 75
+variable beadTB equal ${beadTA}+1
+group grpTA id ${beadTA}
+group grpTB id ${beadTB}
 
+# set the magnitude of the torque
+variable torqmag equal ${torque}
+
+# Get the torque about the vector going from bead A to B
+# It should approximatly be a unit vector, since the bonds have length 1
+# This should give a right-hand rotation about this vector
+variable torqA2Bx equal ${torqmag}*(x[${beadTB}]-x[${beadTA}])
+variable torqA2By equal ${torqmag}*(y[${beadTB}]-y[${beadTA}])
+variable torqA2Bz equal ${torqmag}*(z[${beadTB}]-z[${beadTA}])
+
+# Get the torque about the vector going from bead B to A
+# This will be a rotation in the opposite derection to above
+variable torqB2Ax equal ${torqmag}*(x[${beadTA}]-x[${beadTB}])
+variable torqB2Ay equal ${torqmag}*(y[${beadTA}]-y[${beadTB}])
+variable torqB2Az equal ${torqmag}*(z[${beadTA}]-z[${beadTB}])
+
+# Now add the torque fixes
+fix tw1 grpTA cbaddtorque v_torqA2Bx v_torqA2By v_torqA2Bz
+fix tw2 grpTB cbaddtorque v_torqB2Ax v_torqB2Ay v_torqB2Az
+
+#bond breaking
+
+angle_coeff   1 cosine 20.0
+angle_coeff   2 polytorsion 70.0 30.0
+angle_coeff   3 polytorsion 70.0 0.0
+
+
+## do run
+run 10000000
+
+
+#### write a final restart file
+write_data restarts/final_l300_lk10_t${torque}_run${runnumber}.restart nocoeff 
 
 ## finish the loop
 clear
 next runnumber
-jump in.lammps_SCloop
+jump in_l300_lk10.lammps_SCloop
