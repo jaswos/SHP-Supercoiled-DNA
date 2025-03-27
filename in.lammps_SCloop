@@ -1,0 +1,151 @@
+###############################################
+# LAMMPS script for a supercoiled loop
+###############################################
+
+# each partition takes a different polytorsion stiffness value
+variable porsion universe 20.0 30.0 40.0 50.0 60.0 70.0 80.0
+#variable porsion equal 20.0
+
+# now do a loop with 10 different simulations
+# each with a different seed
+
+variable runnumber index 1
+
+if "${runnumber} == 1" then &
+      "variable seed equal 748291" &
+   elif "${runnumber} == 2"  &
+      "variable seed equal 583210" &
+   elif "${runnumber} == 3"  &
+      "variable seed equal 972431" &
+   elif "${runnumber} == 4"  &
+       "variable seed equal 304825" &
+   elif "${runnumber} == 5"  &
+       "variable seed equal 615203" &
+   elif "${runnumber} == 6"  &
+       "variable seed equal 489132" &
+   elif "${runnumber} == 7"  &
+       "variable seed equal 790214" &
+   elif "${runnumber} == 8"  &
+       "variable seed equal 356827" &
+   elif "${runnumber} == 9"  &
+       "variable seed equal 928374" &
+   elif "${runnumber} == 10"  &
+       "variable seed equal 234987" &
+   else &
+       "variable seed equal 1357924" &
+
+# careful, this will give the same seed for all runnumber>=10
+        
+###
+# Box and units  (use LJ units and periodic boundaries)
+###
+
+units lj                 # use lennard-jones (i.e. dimensionless) units
+atom_style hybrid angle ellipsoid   # atoms with bonds, angles and orientations
+
+boundary p p p           # all boundaries are periodic
+
+###
+# Pair interactions require lists of neighbours to be calculated
+###
+neighbor 1.9 bin
+neigh_modify every 1 delay 1 check yes 
+
+## command to supress communication warning
+comm_modify cutoff 3.355
+
+### 
+# READ "start" data file 
+###
+read_data initial_conditions.txt
+
+
+### 
+# Reset timestep 
+###
+reset_timestep 0 
+
+###
+# Define groups 
+###
+group all type 1
+
+###
+# Dump configurations every 50,000 steps
+###
+compute quat all property/atom quatw quati quatj quatk
+dump d2 all custom 100000 dumpfiles/dump_L300_porsion${porsion}_run${runnumber}.DNA id type xs ys zs ix iy iz c_quat[1] c_quat[2] c_quat[3] c_quat[4]
+# compute the quaternion which describes the orientation of each bead
+# output along with coordinates
+
+
+###
+# Set up interactions
+###
+
+
+###################################################################
+# Stiffness term
+#
+# E = K * (1+cos(theta)), K>0
+#
+angle_style   hybrid cosine polytorsion
+angle_coeff   1 cosine 20.0
+angle_coeff   2 polytorsion 70.0 30.0
+angle_coeff   3 polytorsion 70.0 ${porsion}
+
+###################################################################
+
+###################################################################
+# Pair interaction between non-bonded atoms
+
+pair_style      lj/cut 1.12246152962189
+pair_modify     shift yes
+pair_coeff      1 1 1.0 1.0 1.12246152962189
+
+###################################################################
+
+###################################################################
+# Pair interaction between bonded atoms
+
+bond_style   fene
+special_bonds fene #<=== I M P O R T A N T (new command)
+bond_coeff   1   30.0   1.6   1.0   1.0
+
+
+###################################################
+###
+# Set up fixes
+###
+
+fix 1 all   nve/asphere   ###NVE ensemble
+fix 2 all   langevin   1.0 1.0 0.5  ${seed} angmom 3.333 ###Langevin integrator Tstart Tstop 1/friction rndseed
+# the nve/asphere interates rotational motion as well as displacements
+# also need to add a command to the langevin fix to do the rotation
+
+##### Output thermodynamic info  (temperature, energy, pressure, etc.) #####
+thermo 100000
+thermo_style   custom   step  temp  epair  emol
+############################################################################
+
+
+
+## Initially, there may be some small overlaps
+## so do a short run with some extra checks and
+## and very small timestep
+
+neigh_modify every 1 delay 1 check no 
+timestep 0.001 
+run 1000
+
+## switch to normal settings for the rest of the run
+neigh_modify every 1 delay 1 check yes
+timestep 0.01 
+
+## do run for 30 million steps
+run 30000000
+
+
+#### write a final restart data file
+write_data restarts/final_L300_porsion{porsion}_run${runnumber}.restart nocoeff
+
